@@ -116,6 +116,37 @@ class PredicateStoreTest < Minitest::Test
     ], @store.query(:triplet, :X, :Y, :X)
   end
 
+  def test_any_wildcard_across_multiple_positions
+    @store.add(:triplet, "a", "b", "c")
+    @store.add(:triplet, "x", "b", "z")
+
+    assert_equal [
+      ["a", "b", "c"],
+      ["x", "b", "z"]
+    ], @store.query(:triplet, PredicateStore::ANY, "b", PredicateStore::ANY)
+  end
+
+  def test_repeated_variable_with_three_occurrences
+    @store.add(:triple_same, "a", "a", "a")
+    @store.add(:triple_same, "a", "a", "b")
+
+    assert_equal [
+      ["a", "a", "a"]
+    ], @store.query(:triple_same, :X, :X, :X)
+  end
+
+  def test_query_with_wrong_arity_raises_error
+    @store.add(:loves, "garfield", "lasagna")
+
+    assert_raises(PredicateStore::ArityMismatchError) do
+      @store.query(:loves, :X)
+    end
+
+    assert_raises(PredicateStore::ArityMismatchError) do
+      @store.query(:loves, :X, :Y, :Z)
+    end
+  end
+
   def test_query_results_are_independent_of_input_order
     @store.add(:is_a_cat, "lucy")
     @store.add(:is_a_cat, "garfield")
@@ -128,10 +159,46 @@ class PredicateStoreTest < Minitest::Test
     ], @store.query(:is_a_cat, :X)
   end
 
-  def test_query_with_wrong_arity_does_not_match
+  def test_query_with_wrong_arity_raises_error
     @store.add(:loves, "garfield", "lasagna")
 
-    assert_equal [], @store.query(:loves, :X)
-    assert_equal [], @store.query(:loves, :X, :Y, :Z)
+    assert_raises(PredicateStore::ArityMismatchError) do
+      @store.query(:loves, :X)
+    end
+
+    assert_raises(PredicateStore::ArityMismatchError) do
+      @store.query(:loves, :X, :Y, :Z)
+    end
+  end
+
+  def test_add_with_matching_arity_succeeds
+    @store.add(:loves, "garfield", "lasagna")
+    @store.add(:loves, "odie", "lasagna")
+
+    assert_equal [
+      ["garfield", "lasagna"],
+      ["odie", "lasagna"]
+    ], @store.query(:loves, :Who, "lasagna")
+  end
+
+  def test_add_with_too_few_entities_raises_error
+    @store.add(:loves, "garfield", "lasagna")
+
+    error = assert_raises(PredicateStore::ArityMismatchError) do
+      @store.add(:loves, "odie")
+    end
+
+    puts "HI! #{error.message}"
+    assert_equal "loves expects 2 entities, got 1", error.message
+  end
+
+  def test_add_with_too_many_entities_raises_error
+    @store.add(:is_a_cat, "garfield")
+
+    error = assert_raises(PredicateStore::ArityMismatchError) do
+      @store.add(:is_a_cat, "garfield", "orange")
+    end
+
+    assert_equal "is_a_cat expects 1 entities, got 2", error.message
   end
 end
