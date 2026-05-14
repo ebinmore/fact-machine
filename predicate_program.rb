@@ -1,75 +1,121 @@
 require_relative "predicate_store"
 
 class PredicateProgram
+  class ParseError < StandardError; end
+  class RuntimeError < StandardError; end
+
   def initialize(store = PredicateStore.new)
     @store = store
   end
 
+  # Execute commands from a file line-by-line.
+  #
   def run_file(path)
     File.readlines(path, chomp: true).each_with_index do |line, index|
       run_line(line, line_number: index + 1)
+
+    rescue ParseError, PredicateStore::ArityMismatchError => error
+      raise RuntimeError,
+        "Line #{index + 1}: #{error.message}\n  #{line}"
     end
   end
 
+  # Execute a single INPUT or QUERY line.
+  #
   def run_line(line, line_number: nil)
     line = line.strip
+
+    # Ignore blank lines and comments.
+    #
     return if line.empty? || line.start_with?("#")
 
-    command, predicate, args = parse_line(line)
+    command, predicate, arguments = parse_line(line)
 
     case command
     when "INPUT"
-      @store.add(predicate, *args)
+      @store.add(predicate, *arguments)
+
     when "QUERY"
-      result = @store.query(predicate, *args)
-      print_query_result(predicate, args, result)
+      result = @store.query(predicate, *arguments)
+      print_query_result(predicate, arguments, result)
+
     else
-      raise "Unknown command #{command.inspect} on line #{line_number}"
+      raise ParseError,
+        "Unknown command #{command.inspect}"
     end
   end
 
   private
 
+  # Parse lines like:
+  #
+  # INPUT loves (garfield, lasagna)
+  # QUERY loves (garfield, FavoriteFood)
+  #
   def parse_line(line)
-    match = line.match(/\A(INPUT|QUERY)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)\z/)
+    match = line.match(
+      /\A(INPUT|QUERY)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)\z/
+    )
 
     unless match
-      raise "Could not parse line: #{line.inspect}"
+      raise ParseError, "Could not parse command"
     end
 
     command = match[1]
     predicate = match[2].to_sym
-    raw_args = match[3].strip
+    raw_arguments = match[3].strip
 
-    args =
-      if raw_args.empty?
+    arguments =
+      if raw_arguments.empty?
         []
       else
-        raw_args.split(",").map { |arg| parse_arg(arg.strip) }
+        raw_arguments
+          .split(",")
+          .map { |argument| parse_argument(argument.strip) }
       end
 
-    [command, predicate, args]
+    [command, predicate, arguments]
   end
 
-  def parse_arg(arg)
-    case arg
+  # Parse a single argument.
+  #
+  # "_"                  => wildcard
+  # "Person"             => variable placeholder
+  # "garfield"           => concrete entity
+  #
+  def parse_argument(argument)
+    if argument.empty?
+      raise ParseError, "Empty argument"
+    end
+
+    case argument
     when "_"
       PredicateStore::ANY
+
     when /\A[A-Z][a-zA-Z0-9_]*\z/
-      arg.to_sym # Placeholder variable: X, FavoriteFood, Person, etc.
+      argument.to_sym
+
+    when /\A[a-zA-Z_][a-zA-Z0-9_]*\z/
+      argument
+
     else
-      arg # Concrete entity: lucy, garfield, bowler_cat, lasagna
+      raise ParseError,
+        "Invalid argument #{argument.inspect}"
     end
   end
 
-  def print_query_result(predicate, args, result)
-    rendered_query = "#{predicate}(#{args.map(&:to_s).join(", ")})"
+  # Print query results in a readable format.
+  #
+  def print_query_result(predicate, arguments, result)
+    rendered_query =
+      "#{predicate}(#{arguments.map(&:to_s).join(", ")})"
 
     puts "QUERY #{rendered_query}"
 
     case result
     when true, false
       puts "=> #{result}"
+
     else
       if result.empty?
         puts "=> no matches"
@@ -84,15 +130,21 @@ end
 
 # CLI usage:
 #
-# ruby predicate_bootstrap.rb example.txt
-
+# ruby predicate_program.rb example.txt
+#
 if __FILE__ == $PROGRAM_NAME
   path = ARGV[0]
 
   unless path
-    warn "Usage: ruby predicate_bootstrap.rb path/to/file.txt"
+    warn "Usage: ruby predicate_program.rb path/to/file.txt"
     exit 1
   end
 
-  PredicateProgram.new.run_file(path)
+  begin
+    PredicateProgram.new.run_file(path)
+
+  rescue PredicateProgram::RuntimeError => error
+    warn error.message
+    exit 1
+  end
 end
