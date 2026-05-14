@@ -1,11 +1,13 @@
+require "stringio"
 require_relative "predicate_store"
 
 class PredicateProgram
   class ParseError < StandardError; end
   class RuntimeError < StandardError; end
 
-  def initialize(store = PredicateStore.new)
+  def initialize(store = PredicateStore.new, output: $stdout)
     @store = store
+    @output = output
   end
 
   # Execute commands from a file line-by-line.
@@ -70,10 +72,9 @@ class PredicateProgram
         []
       else
         raw_arguments
-          .split(",")
+          .split(",", -1)
           .map { |argument| parse_argument(argument.strip) }
       end
-
     [command, predicate, arguments]
   end
 
@@ -110,18 +111,18 @@ class PredicateProgram
     rendered_query =
       "#{predicate}(#{arguments.map(&:to_s).join(", ")})"
 
-    puts "QUERY #{rendered_query}"
+    @output.puts "QUERY #{rendered_query}"
 
     case result
     when true, false
-      puts "=> #{result}"
+      @output.puts "=> #{result}"
 
     else
       if result.empty?
-        puts "=> no matches"
+        @output.puts "=> no matches"
       else
         result.each do |row|
-          puts "=> #{row.inspect}"
+          @output.puts "=> #{row.inspect}"
         end
       end
     end
@@ -130,19 +131,47 @@ end
 
 # CLI usage:
 #
-# ruby predicate_program.rb example.txt
+# ruby predicate_program.rb example.txt [expected_output.txt]
 #
 if __FILE__ == $PROGRAM_NAME
-  path = ARGV[0]
+  input_path = ARGV[0]
+  expected_output_path = ARGV[1]
 
-  unless path
-    warn "Usage: ruby predicate_program.rb path/to/file.txt"
+  unless input_path
+    warn "Usage: ruby predicate_program.rb input.txt [expected_output.txt]"
     exit 1
   end
 
   begin
-    PredicateProgram.new.run_file(path)
+    if expected_output_path
+      actual_output = StringIO.new
 
+      PredicateProgram.new(output: actual_output).run_file(input_path)
+
+      actual = actual_output.string
+      expected = File.read(expected_output_path)
+
+      # Always print normal program output first.
+      print actual
+
+      if actual == expected
+        puts "PASS"
+        exit 0
+      else
+        puts "FAIL"
+
+        warn
+        warn "Expected:"
+        warn expected
+        warn
+        warn "Actual:"
+        warn actual
+
+        exit 1
+      end
+    else
+      PredicateProgram.new.run_file(input_path)
+    end
   rescue PredicateProgram::RuntimeError => error
     warn error.message
     exit 1
