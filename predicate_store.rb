@@ -1,12 +1,16 @@
 class PredicateStore
-  # Matches any value in a query:
+  class ArityMismatchError < StandardError; end
+
+  # Wildcard placeholder:
   #
   # query(:likes, "garfield", :_)
+  #
+  # matches anything in the second position.
   #
   ANY = :_
 
   def initialize
-    # Structure:
+    # Main storage structure:
     #
     # {
     #   loves: {
@@ -30,93 +34,126 @@ class PredicateStore
     #   }
     # }
     #
-    @data = Hash.new do |h, predicate|
-      h[predicate] = {
+    @data = Hash.new do |data_by_predicate, predicate|
+      data_by_predicate[predicate] = {
+        # Full stored facts for this predicate
         facts: [],
 
         # Inverted indexes by argument position.
         #
-        # indexes[0]["garfield"]
-        # => all facts where first argument == "garfield"
+        # Example:
         #
-        indexes: Hash.new do |position_hash, position|
-          position_hash[position] = Hash.new do |entity_hash, entity|
-            entity_hash[entity] = []
-          end
+        # indexes[0]["garfield"]
+        #
+        # returns all facts where the first
+        # entity is "garfield".
+        #
+        indexes: Hash.new do |indexes_by_position, argument_position|
+          indexes_by_position[argument_position] =
+            Hash.new do |facts_by_entity, entity_value|
+              facts_by_entity[entity_value] = []
+            end
         end
       }
     end
   end
 
   def add(predicate, *entities)
-    bucket = @data[predicate]
+    predicate_data = @data[predicate]
 
-    # Store full fact
-    bucket[:facts] << entities
+    validate_fact_arity!(predicate, predicate_data, entities)
+    
+    # Store the full fact
+    predicate_data[:facts] << entities
 
-    # Add fact to each positional index
+    # Add the fact to each positional index.
     #
     # Example:
     #
     # add(:loves, "garfield", "lasagna")
     #
-    # Creates:
+    # creates:
     #
     # indexes[0]["garfield"]
     # indexes[1]["lasagna"]
     #
-    entities.each_with_index do |entity, position|
-      bucket[:indexes][position][entity] << entities
+    entities.each_with_index do |entity, argument_position|
+      predicate_data[:indexes][argument_position][entity] << entities
     end
   end
 
-  def query(predicate, *pattern)
-    bucket = @data[predicate]
+  def query(predicate, *query_terms)
+    predicate_data = @data[predicate]
 
     # Unknown predicate
-    return [] unless bucket
+    return [] unless predicate_data
 
-    # Use indexes to reduce search space
-    #
-    # Example:
+    # ensure query arity matches stored facts
+    validate_arity!(predicate, predicate_data, query_terms)
+
+    # Use indexes to reduce search space.
     #
     # query(:loves, "garfield", :Food)
     #
-    # only scans rows matching:
+    # can use the first-position index
+    # instead of scanning every fact.
     #
-    # first entity == "garfield"
-    #
-    candidates = best_candidates(bucket, pattern)
+    candidate_facts = best_candidates(predicate_data, query_terms)
 
-    matches = candidates.select do |fact|
-      match_pattern?(pattern, fact)
+    matching_facts = candidate_facts.select do |stored_fact|
+      match_pattern?(query_terms, stored_fact)
     end
 
-    # Fully concrete queries return boolean
+    # Fully concrete queries return boolean:
     #
     # query(:loves, "garfield", "lasagna")
     # => true
     #
-    # Variable queries return matching rows
+    # Variable queries return matching facts:
     #
     # query(:loves, "garfield", :Food)
     # => [["garfield", "lasagna"]]
     #
-    concrete_query?(pattern) ? matches.any? : matches.sort
+    concrete_query?(query_terms) ? matching_facts.any? : matching_facts.sort
   end
 
   private
 
-  def best_candidates(bucket, pattern)
-    candidate_sets = []
+  def validate_arity!(predicate, predicate_data, query_terms)
+    return if predicate_data[:facts].empty?
 
-    pattern.each_with_index do |token, position|
-      # Variables and wildcards cannot use indexes
-      next if placeholder?(token)
+    expected_arity = predicate_data[:facts].first.length
+    actual_arity = query_terms.length
 
-      # Use positional index to narrow search
+    return if expected_arity == actual_arity
+
+    raise ArityMismatchError,
+      "#{predicate} expects #{expected_arity} entities, got #{actual_arity}"
+  end
+
+  def validate_fact_arity!(predicate, predicate_data, entities)
+    return if predicate_data[:facts].empty?
+
+    expected_arity = predicate_data[:facts].first.length
+    actual_arity = entities.length
+
+    return if expected_arity == actual_arity
+
+    raise ArityMismatchError,
+      "#{predicate} expects #{expected_arity} entities, got #{actual_arity}"
+  end
+
+  def best_candidates(predicate_data, query_terms)
+    candidate_fact_sets = []
+
+    query_terms.each_with_index do |query_term, argument_position|
+      # Variables and wildcards cannot
+      # use positional indexes.
       #
-      # Example:
+      next if placeholder?(query_term)
+
+      # Use positional index to narrow
+      # the candidate set.
       #
       # query(:loves, "garfield", :Food)
       #
@@ -124,21 +161,26 @@ class PredicateStore
       #
       # indexes[0]["garfield"]
       #
-      candidate_sets << bucket[:indexes].dig(position, token).to_a
+      candidate_fact_sets << predicate_data[:indexes]
+        .dig(argument_position, query_term)
+        .to_a
     end
 
-    # No concrete values means we must scan everything
+    # No concrete values means we must
+    # scan all facts for this predicate.
     #
     # query(:loves, :X, :Y)
     #
-    return bucket[:facts] if candidate_sets.empty?
+    return predicate_data[:facts] if candidate_fact_sets.empty?
 
-    # Use smallest candidate set for efficiency
-    candidate_sets.min_by(&:size)
+    # Use the smallest candidate set
+    # for best performance.
+    #
+    candidate_fact_sets.min_by(&:size)
   end
 
-  def concrete_query?(pattern)
-    pattern.none? { |token| placeholder?(token) }
+  def concrete_query?(query_terms)
+    query_terms.none? { |query_term| placeholder?(query_term) }
   end
 
   def placeholder?(value)
@@ -155,8 +197,8 @@ class PredicateStore
     value.is_a?(Symbol) && value != ANY
   end
 
-  def match_pattern?(pattern, fact)
-    # Arity mismatch
+  def match_pattern?(query_terms, stored_fact)
+    # Predicates must have the same arity.
     #
     # query(:likes, :X)
     #
@@ -164,23 +206,26 @@ class PredicateStore
     #
     # ["garfield", "lasagna"]
     #
-    return false unless pattern.length == fact.length
+    return false unless query_terms.length == stored_fact.length
 
-    # Tracks variable bindings during matching
+    # Tracks variable bindings during matching.
     #
     # query(:triplet, :X, :Y, :X)
     #
-    # after matching:
+    # might produce:
     #
-    # :X => "alice"
-    # :Y => "bob"
+    # {
+    #   X: "alice",
+    #   Y: "bob"
+    # }
     #
-    bindings = {}
+    variable_bindings = {}
 
-    # Pair query tokens with fact values
+    # zip pairs query terms with stored values
+    # by position.
     #
-    # pattern = [:X, :Y, :X]
-    # fact    = ["alice", "bob", "alice"]
+    # query_terms = [:X, :Y, :X]
+    # stored_fact = ["alice", "bob", "alice"]
     #
     # becomes:
     #
@@ -190,34 +235,26 @@ class PredicateStore
     #   [:X, "alice"]
     # ]
     #
-    pattern.zip(fact).all? do |token, value|
-      if token == ANY
-        # Wildcard always matches
+    query_terms.zip(stored_fact).all? do |query_term, stored_entity|
+      if query_term == ANY
+        # Wildcard matches anything
         true
 
-      elsif variable?(token)
-        if bindings.key?(token)
+      elsif variable?(query_term)
+        if variable_bindings.key?(query_term)
           # Variable already bound:
-          #
-          # :X must consistently refer
-          # to the same value everywhere
-          #
-          bindings[token] == value
+          # value must match previous binding
+          variable_bindings[query_term] == stored_entity
         else
-          # First time variable seen:
-          #
-          # bind variable to current value
-          #
-          bindings[token] = value
+          # First appearance of variable:
+          # bind it to current entity
+          variable_bindings[query_term] = stored_entity
           true
         end
 
       else
         # Concrete value comparison
-        #
-        # "garfield" == "garfield"
-        #
-        token == value
+        query_term == stored_entity
       end
     end
   end
