@@ -1,0 +1,3 @@
+false
+garfield, lucy, bowler_cat
+lasagna
