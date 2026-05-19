@@ -93,11 +93,17 @@ class PredicateProgram
     when "_"
       PredicateStore::ANY
 
-    when /\A[A-Z][a-zA-Z0-9_]*\z/
-      argument.to_sym
+      # Variable placeholders
+      when /\A[A-Z][a-zA-Z0-9_]*\z/
+        argument.to_sym
 
-    when /\A[a-zA-Z_][a-zA-Z0-9_]*\z/
-      argument
+      # Integer literals become strings
+      when /\A\d+\z/
+        argument.to_s
+
+      # Concrete entity names
+      when /\A[a-z_][a-zA-Z0-9_]*\z/
+        argument
 
     else
       raise ParseError,
@@ -105,27 +111,122 @@ class PredicateProgram
     end
   end
 
-  # Print query results in a readable format.
+  # Print the user-visible result for a query.
   #
-  def print_query_result(predicate, arguments, result)
-    rendered_query =
-      "#{predicate}(#{arguments.map(&:to_s).join(", ")})"
-
-    @output.puts "QUERY #{rendered_query}"
-
+  # Output format depends on the number of variables:
+  #
+  # QUERY likes (sam, sam)
+  # => true
+  #
+  # QUERY likes (X, sam)
+  # => alex
+  #
+  # QUERY likes (X, Y)
+  # => {X: alex, Y: sam}
+  #
+  def print_query_result(_predicate, arguments, result)
     case result
     when true, false
-      @output.puts "=> #{result}"
+      # Concrete queries return boolean.
+      #
+      @output.puts result
 
     else
+      # No matches found.
+      #
       if result.empty?
-        @output.puts "=> no matches"
-      else
-        result.each do |row|
-          @output.puts "=> #{row.inspect}"
-        end
+        @output.puts false
+        return
       end
+
+      # Count distinct variables used in query.
+      #
+      variables =
+        arguments
+          .select { |argument| variable?(argument) }
+          .uniq
+
+      rendered_rows =
+        if variables.length <= 1
+          # Single-variable queries only print values.
+          #
+          # QUERY likes (X, sam)
+          # => alex
+          #
+          result.map do |row|
+            projected_values(arguments, row).join(", ")
+          end
+
+        else
+          # Multi-variable queries print named bindings.
+          #
+          # QUERY likes (X, Y)
+          # => {X: alex, Y: sam}
+          #
+          result.map do |row|
+            "{#{projected_bindings(arguments, row).join(", ")}}"
+          end
+        end
+
+      @output.puts rendered_rows.join(", ")
     end
+  end
+
+  # Extract only bound variable values from a row.
+  #
+  # QUERY likes (X, sam)
+  #
+  # with:
+  #
+  # ["alex", "sam"]
+  #
+  # becomes:
+  #
+  # ["alex"]
+  #
+  def projected_values(arguments, row)
+    arguments.zip(row).filter_map do |argument, value|
+      value if variable?(argument)
+    end.uniq
+  end
+
+  # Extract named variable bindings from a row.
+  #
+  # QUERY likes (X, Y)
+  #
+  # with:
+  #
+  # ["alex", "sam"]
+  #
+  # becomes:
+  #
+  # ["X: alex", "Y: sam"]
+  #
+  def projected_bindings(arguments, row)
+    seen_variables = {}
+
+    arguments.zip(row).filter_map do |argument, value|
+      next unless variable?(argument)
+
+      # Repeated variables should only
+      # appear once in output.
+      #
+      next if seen_variables[argument]
+
+      seen_variables[argument] = true
+
+      "#{argument}: #{value}"
+    end
+  end
+
+  # Variables are symbols except for the wildcard.
+  #
+  # :X
+  # :Person
+  # :FavoriteFood
+  #
+  def variable?(value)
+    value.is_a?(Symbol) && value != PredicateStore::ANY
   end
 end
 

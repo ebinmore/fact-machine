@@ -18,9 +18,7 @@ class PredicateProgramTest < Minitest::Test
     @program.run_line("QUERY is_a_cat (X)")
 
     assert_equal <<~OUTPUT, @output.string
-      QUERY is_a_cat(X)
-      => ["garfield"]
-      => ["lucy"]
+      garfield, lucy
     OUTPUT
   end
 
@@ -32,8 +30,7 @@ class PredicateProgramTest < Minitest::Test
     @program.run_line("QUERY is_a_cat (X)")
 
     assert_equal <<~OUTPUT, @output.string
-      QUERY is_a_cat(X)
-      => ["lucy"]
+      lucy
     OUTPUT
   end
 
@@ -51,9 +48,7 @@ class PredicateProgramTest < Minitest::Test
     @program.run_file(file.path)
 
     assert_equal <<~OUTPUT, @output.string
-      QUERY is_a_cat(X)
-      => ["garfield"]
-      => ["lucy"]
+      garfield, lucy
     OUTPUT
   ensure
     file&.unlink
@@ -117,5 +112,61 @@ class PredicateProgramTest < Minitest::Test
     ERROR
   ensure
     file&.unlink
+  end
+
+  def test_concrete_query_prints_boolean
+    @program.run_line("INPUT is_a_cat (lucy)")
+    @program.run_line("QUERY is_a_cat (lucy)")
+
+    assert_equal <<~OUTPUT, @output.string
+      true
+    OUTPUT
+  end
+
+  def test_query_with_no_matches_prints_false
+    @program.run_line("QUERY is_a_cat (X)")
+
+    assert_equal <<~OUTPUT, @output.string
+      false
+    OUTPUT
+  end
+
+  def test_single_variable_query_prints_values_only
+    @program.run_line("INPUT are_friends (alex, sam)")
+    @program.run_line("INPUT are_friends (frog, toad)")
+    @program.run_line("QUERY are_friends (X, sam)")
+
+    assert_equal <<~OUTPUT, @output.string
+      alex
+    OUTPUT
+  end
+
+  def test_single_repeated_variable_query_prints_value_once
+    @program.run_line("INPUT likes (alex, sam)")
+    @program.run_line("INPUT likes (sam, sam)")
+    @program.run_line("QUERY likes (X, X)")
+
+    assert_equal <<~OUTPUT, @output.string
+      sam
+    OUTPUT
+  end
+
+  def test_multi_variable_query_prints_named_bindings
+    @program.run_line("INPUT likes (alex, sam)")
+    @program.run_line("INPUT likes (sam, frodo)")
+    @program.run_line("QUERY likes (X, Y)")
+
+    assert_equal <<~OUTPUT, @output.string
+      {X: alex, Y: sam}, {X: sam, Y: frodo}
+    OUTPUT
+  end
+
+  def test_multi_variable_query_with_repeated_variable_prints_each_binding_once
+    @program.run_line("INPUT triplet (alice, bob, alice)")
+    @program.run_line("QUERY triplet (X, Y, X)")
+
+    assert_equal <<~OUTPUT, @output.string
+      {X: alice, Y: bob}
+    OUTPUT
   end
 end

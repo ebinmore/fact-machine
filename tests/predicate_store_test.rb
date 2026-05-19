@@ -188,7 +188,6 @@ class PredicateStoreTest < Minitest::Test
       @store.add(:loves, "odie")
     end
 
-    puts "HI! #{error.message}"
     assert_equal "loves expects 2 entities, got 1", error.message
   end
 
